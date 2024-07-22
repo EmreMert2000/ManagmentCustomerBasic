@@ -1,6 +1,7 @@
 import tkinter as tk
 from tkinter import messagebox, ttk
 import sqlite3
+import os
 
 # Veri tabanı bağlantısı
 def create_connection():
@@ -21,6 +22,13 @@ def create_tables():
                 name TEXT NOT NULL,
                 position TEXT NOT NULL,
                 salary REAL NOT NULL)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS invoices (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                firm_name TEXT NOT NULL,
+                product_name TEXT NOT NULL,
+                quantity INTEGER NOT NULL,
+                price REAL NOT NULL,
+                total REAL NOT NULL)''')
     conn.commit()
     conn.close()
 
@@ -57,6 +65,67 @@ def get_all_personnel():
     personnel = c.fetchall()
     conn.close()
     return personnel
+
+# Tüm faturaları getirme
+def get_all_invoices():
+    conn = create_connection()
+    c = conn.cursor()
+    c.execute("SELECT DISTINCT firm_name FROM invoices")
+    invoices = c.fetchall()
+    conn.close()
+    return invoices
+
+# Fatura oluşturma ve kaydetme
+def create_invoice(firm_name, items):
+    conn = create_connection()
+    c = conn.cursor()
+    total_amount = 0
+    for item in items:
+        product_name, quantity, price = item
+        total_price = quantity * price
+        total_amount += total_price
+        c.execute("INSERT INTO invoices (firm_name, product_name, quantity, price, total) VALUES (?, ?, ?, ?, ?)",
+                  (firm_name, product_name, quantity, price, total_price))
+    conn.commit()
+    conn.close()
+    
+    invoice_content = f"""
+    <html>
+    <head><title>Fatura</title></head>
+    <body>
+        <h1>Fatura</h1>
+        <p>Firma: {firm_name}</p>
+        <table border="1">
+            <tr>
+                <th>Ürün Adı</th>
+                <th>Adet</th>
+                <th>Birim Fiyatı</th>
+                <th>Toplam Fiyat</th>
+            </tr>
+    """
+    for item in items:
+        product_name, quantity, price = item
+        total_price = quantity * price
+        invoice_content += f"""
+        <tr>
+            <td>{product_name}</td>
+            <td>{quantity}</td>
+            <td>{price}</td>
+            <td>{total_price}</td>
+        </tr>
+        """
+    invoice_content += f"""
+        </table>
+        <p>Toplam Tutar: {total_amount}</p>
+    </body>
+    </html>
+    """
+    invoice_filename = f"{firm_name.replace(' ', '_')}_invoice.html"
+    with open(invoice_filename, 'w') as f:
+        f.write(invoice_content)
+
+    messagebox.showinfo("Başarılı", f"Fatura oluşturuldu: {invoice_filename}")
+    return invoice_filename
 
 # Tkinter ana penceresi
 class HRMSApp:
@@ -117,7 +186,7 @@ class HRMSApp:
         
         if user:
             messagebox.showinfo("Başarılı", f"Hoş geldiniz, {user[1]}")
-            self.current_user = user  # current_user'ı set ediyoruz
+            self.current_user = user
             self.show_menu(user)
         else:
             messagebox.showerror("Hata", "Geçersiz kullanıcı adı veya şifre.")
@@ -147,11 +216,13 @@ class HRMSApp:
         tk.Label(self.frame, text=f"Hoş geldiniz, {user[1]} (Admin)").pack()
         tk.Button(self.frame, text="Personel Ekle", command=self.add_personnel).pack(pady=5)
         tk.Button(self.frame, text="Bilgileri Görüntüle", command=self.view_info).pack(pady=5)
+        tk.Button(self.frame, text="Fatura Kes", command=self.invoice_items_count).pack(pady=5)
+        tk.Button(self.frame, text="Faturaları Görüntüle", command=self.view_invoices).pack(pady=5)
         tk.Button(self.frame, text="Çıkış Yap", command=self.show_main).pack(pady=5)
     
     def user_menu(self, user):
         tk.Label(self.frame, text=f"Hoş geldiniz, {user[1]} (User)").pack()
-        tk.Button(self.frame, text="Bilgileri Görüntüle", command=self.view_info).pack(pady=5)
+        tk.Button(self.frame, text="Faturaları Görüntüle", command=self.view_invoices).pack(pady=5)
         tk.Button(self.frame, text="Çıkış Yap", command=self.show_main).pack(pady=5)
     
     def clear_frame(self):
@@ -198,13 +269,12 @@ class HRMSApp:
     
     def view_info(self):
         self.clear_frame()
-        
         personnel = get_all_personnel()
         
         if personnel:
-            tree = ttk.Treeview(self.frame, columns=("ID", "Adı", "Pozisyon", "Maaş"), show='headings')
+            tree = ttk.Treeview(self.frame, columns=("ID", "Ad", "Pozisyon", "Maaş"), show="headings")
             tree.heading("ID", text="ID")
-            tree.heading("Adı", text="Adı")
+            tree.heading("Ad", text="Ad")
             tree.heading("Pozisyon", text="Pozisyon")
             tree.heading("Maaş", text="Maaş")
             
@@ -216,6 +286,112 @@ class HRMSApp:
             tk.Label(self.frame, text="Gösterilecek personel bilgisi yok.").pack()
         
         tk.Button(self.frame, text="Geri", command=lambda: self.show_menu(self.current_user)).pack(pady=5)
+    
+    def invoice_items_count(self):
+        self.clear_frame()
+        
+        tk.Label(self.frame, text="Faturayı kesmek istediğiniz firmanın adını girin:").pack()
+        self.firm_name_entry = tk.Entry(self.frame)
+        self.firm_name_entry.pack()
+        
+        tk.Label(self.frame, text="Kaç kalem ürün kesileceğini girin:").pack()
+        self.item_count_entry = tk.Entry(self.frame)
+        self.item_count_entry.pack()
+        
+        tk.Button(self.frame, text="Devam", command=self.create_invoice_form).pack(pady=5)
+        tk.Button(self.frame, text="Geri", command=lambda: self.show_menu(self.current_user)).pack(pady=5)
+    
+    def create_invoice_form(self):
+        try:
+            self.item_count = int(self.item_count_entry.get())
+            self.firm_name = self.firm_name_entry.get()
+            self.show_invoice_form()
+        except ValueError:
+            messagebox.showerror("Hata", "Geçersiz ürün sayısı.")
+    
+    def show_invoice_form(self):
+        self.clear_frame()
+        
+        self.entries = []
+        tk.Label(self.frame, text=f"Firma: {self.firm_name}").pack()
+        
+        for i in range(self.item_count):
+            row_frame = tk.Frame(self.frame)
+            row_frame.pack(fill=tk.X)
+            
+            tk.Label(row_frame, text=f"Ürün Adı {i+1}:").pack(side=tk.LEFT)
+            product_name_entry = tk.Entry(row_frame)
+            product_name_entry.pack(side=tk.LEFT)
+            
+            tk.Label(row_frame, text="Adet:").pack(side=tk.LEFT)
+            quantity_entry = tk.Entry(row_frame)
+            quantity_entry.pack(side=tk.LEFT)
+            
+            tk.Label(row_frame, text="Birim Fiyatı:").pack(side=tk.LEFT)
+            price_entry = tk.Entry(row_frame)
+            price_entry.pack(side=tk.LEFT)
+            
+            self.entries.append((product_name_entry, quantity_entry, price_entry))
+        
+        tk.Button(self.frame, text="Fatura Oluştur", command=self.generate_invoice).pack(pady=5)
+        tk.Button(self.frame, text="Geri", command=lambda: self.show_menu(self.current_user)).pack(pady=5)
+    
+    def generate_invoice(self):
+        items = []
+        for entry in self.entries:
+            product_name = entry[0].get()
+            quantity = entry[1].get()
+            price = entry[2].get()
+            
+            if product_name and quantity and price:
+                try:
+                    quantity = int(quantity)
+                    price = float(price)
+                    items.append((product_name, quantity, price))
+                except ValueError:
+                    messagebox.showerror("Hata", "Geçersiz adet veya fiyat değeri.")
+                    return
+            else:
+                messagebox.showerror("Hata", "Tüm alanlar doldurulmalıdır.")
+                return
+        
+        if items:
+            invoice_filename = create_invoice(self.firm_name, items)
+            messagebox.showinfo("Başarılı", f"Fatura başarıyla oluşturuldu: {invoice_filename}")
+            self.show_menu(self.current_user)
+
+    def view_invoices(self):
+        self.clear_frame()
+        invoices = get_all_invoices()
+        
+        if invoices:
+            tree = ttk.Treeview(self.frame, columns=("Firma Adı", "Fatura Dosyası"), show="headings")
+            tree.heading("Firma Adı", text="Firma Adı")
+            tree.heading("Fatura Dosyası", text="Fatura Dosyası")
+            
+            for invoice in invoices:
+                firm_name = invoice[0]
+                invoice_filename = f"{firm_name.replace(' ', '_')}_invoice.html"
+                tree.insert("", tk.END, values=(firm_name, invoice_filename))
+            
+            tree.pack()
+            
+            if self.current_user[3] == "admin":
+                tree.bind("<Double-1>", self.download_invoice)
+        else:
+            tk.Label(self.frame, text="Gösterilecek fatura bilgisi yok.").pack()
+        
+        tk.Button(self.frame, text="Geri", command=lambda: self.show_menu(self.current_user)).pack(pady=5)
+
+    def download_invoice(self, event):
+        selected_item = event.widget.selection()[0]
+        invoice_filename = event.widget.item(selected_item, "values")[1]
+        if os.path.exists(invoice_filename):
+            file_path = os.path.abspath(invoice_filename)
+            os.startfile(file_path)
+        else:
+            messagebox.showerror("Hata", f"{invoice_filename} dosyası bulunamadı.")
+    
 
 if __name__ == "__main__":
     create_tables()
